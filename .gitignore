@@ -1,0 +1,40 @@
+# Virtual environment
+.venv/
+
+# Model files (too large for GitHub)
+models/
+
+# Audio files (private meeting data)
+audio/input/
+audio/processed/
+
+# Voice samples (private)
+voice_samples/
+
+# Database (private data)
+data/meeting_ai.db
+
+# Output transcripts (private)
+outputs/
+
+# Environment variables (contains HF_TOKEN)
+.env
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+
+# Node modules
+meeting-ai-ui/node_modules/
+
+# Vite build
+meeting-ai-ui/dist/
+
+# VS Code
+.vscode/
+
+# Windows
+Thumbs.db
+Desktop.ini
