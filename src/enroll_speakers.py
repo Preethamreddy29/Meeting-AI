@@ -85,7 +85,7 @@ def enroll_speakers():
 
     print("\n✅ All speakers enrolled into database.")
 
-def enroll_single_speaker(speaker_name: str):
+def enroll_single_speaker(speaker_name: str, sample_paths=None):
     """
     Enroll or re-enroll only one specific speaker.
     Used by the UI when uploading samples for one person.
@@ -94,9 +94,12 @@ def enroll_single_speaker(speaker_name: str):
     init_db()
 
     speaker_folder = VOICE_SAMPLES_DIR / speaker_name
-
-    if not speaker_folder.exists():
-        raise ValueError(f"No voice_samples folder found for: {speaker_name}")
+    if sample_paths is None:
+        if not speaker_folder.exists():
+            raise ValueError(f"No voice_samples folder found for: {speaker_name}")
+        sample_files = list(speaker_folder.iterdir())
+    else:
+        sample_files = [Path(path) for path in sample_paths]
 
     print(f"Loading ECAPA model...")
     classifier = EncoderClassifier.from_hparams(
@@ -109,7 +112,7 @@ def enroll_single_speaker(speaker_name: str):
     embeddings   = []
     sample_paths = []
 
-    for sample_file in speaker_folder.iterdir():
+    for sample_file in sample_files:
         if sample_file.suffix.lower() not in [
             ".mp3", ".wav", ".ogg", ".mp4", ".m4a"
         ]:

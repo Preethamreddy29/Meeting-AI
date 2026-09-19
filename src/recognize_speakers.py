@@ -21,7 +21,10 @@ MIN_GUESS_DISPLAY_THRESHOLD = 0.50
 def cosine_similarity(a, b):
     a = np.array(a)
     b = np.array(b)
-    return float(np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b)))
+    denominator = np.linalg.norm(a) * np.linalg.norm(b)
+    if denominator == 0:
+        return 0.0
+    return float(np.dot(a, b) / denominator)
 
 
 def load_ecapa_model():
@@ -64,6 +67,14 @@ def apply_confidence_rules(best_score, second_score, duration):
 
 
 def match_embedding_to_speaker(embedding, profiles, duration):
+    if not profiles:
+        return {
+            "name": "UNKNOWN",
+            "best_guess": None,
+            "confidence": 0.0,
+            "margin": 0.0,
+            "tier": "low",
+        }
     scores = {
         name: cosine_similarity(embedding, profile["embedding"])
         for name, profile in profiles.items()
@@ -101,6 +112,19 @@ def recognize_diarized_speakers(audio_path, speaker_segments):
     print("Loading speaker profiles from database...")
     profiles = load_all_speaker_profiles()   # ← reads from DB now
 
+    if not profiles:
+        print("No enrolled speaker profiles found; keeping all speakers UNKNOWN.")
+        return {
+            segment["speaker"]: {
+                "name": "UNKNOWN",
+                "best_guess": None,
+                "confidence": 0.0,
+                "margin": 0.0,
+                "tier": "low",
+            }
+            for segment in speaker_segments
+        }
+
     print("Loading ECAPA model for recognition...")
     classifier = load_ecapa_model()
 
@@ -126,10 +150,22 @@ def recognize_diarized_speakers(audio_path, speaker_segments):
             end      = segment["end"]
             duration = end - start
             chunk     = extract_audio_chunk(audio_path, start, end)
+            if chunk.size == 0:
+                continue
             embedding = extract_embedding_from_audio(classifier, chunk)
             embeddings.append(embedding)
             total_duration += duration
             print(f"  Extracted [{start}s - {end}s] ({round(duration,2)}s)")
+
+        if not embeddings:
+            speaker_label_to_name[label] = {
+                "name": "UNKNOWN",
+                "best_guess": None,
+                "confidence": 0.0,
+                "margin": 0.0,
+                "tier": "low",
+            }
+            continue
 
         avg_embedding = np.mean(embeddings, axis=0)
         result = match_embedding_to_speaker(avg_embedding, profiles, total_duration)
