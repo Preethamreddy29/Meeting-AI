@@ -17,6 +17,9 @@ data/meeting_ai.db
 # Output transcripts (private)
 outputs/
 
+# Temporary and queued job files
+runtime/
+
 # Environment variables (contains HF_TOKEN)
 .env
 

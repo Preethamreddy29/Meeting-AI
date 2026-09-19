@@ -3,6 +3,9 @@ import sys
 import os
 import types
 import warnings
+from contextlib import asynccontextmanager
+from datetime import datetime
+from pathlib import Path
 
 # ── PyTorch kernel conflict patch ─────────────────────────────────────────────
 # When FastAPI loads multiple torch-based models in the same process,
@@ -18,16 +21,29 @@ if "k2" not in sys.modules:
 # ── TorchCodec patch ──────────────────────────────────────────────────────────
 os.environ["TORCHAUDIO_USE_SOX"] = "0"
 
-import sys
-import os
-from fastapi import FastAPI, UploadFile, File, Form, BackgroundTasks
+from fastapi import FastAPI, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-import shutil
-from pathlib import Path
-from datetime import datetime
 
-app = FastAPI(title="Meeting AI API")
+from src.database import (
+    create_job,
+    fail_incomplete_jobs,
+    get_job,
+    init_db,
+    update_job,
+)
+from src.jobs import submit_job
+from src.storage import remove_job_directory, safe_name, save_audio_upload
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    init_db()
+    fail_incomplete_jobs()
+    yield
+
+
+app = FastAPI(title="Meeting AI API", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -36,10 +52,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-# Track background job status
-job_status = {}
-
 
 def make_job_id():
     return datetime.now().strftime("%Y%m%d_%H%M%S_%f")
@@ -96,47 +108,52 @@ def get_speakers():
 
 @app.post("/api/speakers/enroll")
 async def enroll_speaker(
-    background_tasks: BackgroundTasks,
     name: str = Form(...),
     files: list[UploadFile] = File(...),
 ):
-    job_id   = make_job_id()
-    save_dir = Path(f"voice_samples/{name}")
-    save_dir.mkdir(parents=True, exist_ok=True)
+    display_name = name.strip()
+    if not display_name:
+        return JSONResponse(status_code=400, content={"error": "Speaker name is required"})
+    if not files:
+        return JSONResponse(status_code=400, content={"error": "At least one sample is required"})
 
-    # Save uploaded files
+    job_id = make_job_id()
+    save_dir = Path("voice_samples") / safe_name(display_name, "speaker")
     saved_paths = []
-    for f in files:
-        dest = save_dir / f.filename
-        with open(dest, "wb") as out:
-            shutil.copyfileobj(f.file, out)
-        saved_paths.append(str(dest))
+    try:
+        for upload in files:
+            destination, _ = save_audio_upload(upload, save_dir)
+            saved_paths.append(str(destination))
+    except ValueError as exc:
+        for saved_path in saved_paths:
+            Path(saved_path).unlink(missing_ok=True)
+        return JSONResponse(status_code=400, content={"error": str(exc)})
 
-    job_status[job_id] = {
-        "status":  "running",
-        "message": f"Enrolling {name}...",
-    }
+    create_job(job_id, "speaker_enrollment", f"Enrolling {display_name}...")
 
     def do_enroll():
         try:
             # ── Only enroll THIS speaker, not everyone ──
             from src.enroll_speakers import enroll_single_speaker
-            enroll_single_speaker(speaker_name=name)
+            enroll_single_speaker(display_name, sample_paths=saved_paths)
 
-            job_status[job_id] = {
-                "status":  "done",
-                "message": f"'{name}' enrolled successfully with {len(saved_paths)} sample(s).",
-            }
+            update_job(
+                job_id,
+                status="done",
+                message=f"'{display_name}' enrolled successfully with {len(saved_paths)} sample(s).",
+                result={"speaker_name": display_name, "sample_count": len(saved_paths)},
+            )
         except Exception as e:
             import traceback
-            job_status[job_id] = {
-                "status":  "error",
-                "message": str(e),
-                "detail":  traceback.format_exc(),
-            }
+            update_job(
+                job_id,
+                status="error",
+                message=str(e),
+                error_detail=traceback.format_exc(),
+            )
 
-    background_tasks.add_task(do_enroll)
-    return {"job_id": job_id, "message": f"Enrolling {name}..."}
+    submit_job(job_id, do_enroll)
+    return {"job_id": job_id, "message": f"Enrolling {display_name}..."}
 
 # ── MEETINGS ──────────────────────────────────────────────────────────────────
 
@@ -155,23 +172,17 @@ def get_meetings():
 
 @app.post("/api/meetings/upload")
 async def upload_meeting(
-    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
 ):
-    job_id    = make_job_id()
-    input_dir = Path("audio/input")
-    input_dir.mkdir(parents=True, exist_ok=True)
-    dest      = input_dir / file.filename
+    job_id = make_job_id()
+    job_dir = Path("runtime/jobs") / job_id
+    try:
+        dest, original_filename = save_audio_upload(file, job_dir / "input")
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={"error": str(exc)})
 
-    with open(dest, "wb") as out:
-        shutil.copyfileobj(file.file, out)
-
-    job_status[job_id] = {
-        "status":  "running",
-        "message": "Starting pipeline...",
-        "step":    1,
-        "total":   6,
-    }
+    processed = job_dir / "processed.wav"
+    create_job(job_id, "meeting_processing", "Waiting to process meeting...", total=6)
 
     def do_process():
         try:
@@ -197,25 +208,18 @@ async def upload_meeting(
             )
             from src.file_utils import save_text, save_json
 
-            processed = "audio/processed/output.wav"
             init_db()
 
             # ── Step 1: Convert audio ─────────────────────────────
-            job_status[job_id].update({
-                "message": "Step 1/6 — Converting audio to WAV...",
-                "step": 1,
-            })
+            update_job(job_id, message="Step 1/6 — Converting audio to WAV...", step=1)
             convert_to_wav(str(dest), processed)
 
             # ── Step 2: Transcribe ────────────────────────────────
-            job_status[job_id].update({
-                "message": "Step 2/6 — Transcribing audio (Whisper)...",
-                "step": 2,
-            })
+            update_job(job_id, message="Step 2/6 — Transcribing audio (Whisper)...", step=2)
             transcript_segments, transcript_text = transcribe_audio(processed)
 
             meeting_id = insert_meeting(
-                filename=file.filename,
+                filename=original_filename,
                 duration_sec=(
                     transcript_segments[-1]["end"]
                     if transcript_segments else 0
@@ -223,10 +227,7 @@ async def upload_meeting(
             )
 
             # ── Step 3: Diarize ───────────────────────────────────
-            job_status[job_id].update({
-                "message": "Step 3/6 — Detecting speakers (pyannote)...",
-                "step": 3,
-            })
+            update_job(job_id, message="Step 3/6 — Detecting speakers (pyannote)...", step=3)
             speaker_segments = diarize_audio(processed)
 
             for seg in speaker_segments:
@@ -257,10 +258,7 @@ async def upload_meeting(
             save_text(transcript_text, str(report_dir / "sample_transcript.txt"))
 
             # ── Step 4: Recognize speakers ────────────────────────
-            job_status[job_id].update({
-                "message": "Step 4/6 — Identifying speakers (ECAPA)...",
-                "step": 4,
-            })
+            update_job(job_id, message="Step 4/6 — Identifying speakers (ECAPA)...", step=4)
             from src.recognize_speakers import recognize_diarized_speakers
 
             raw_segments          = get_raw_segments_for_meeting(meeting_id)
@@ -290,10 +288,7 @@ async def upload_meeting(
             )
 
             # ── Step 5: Build final named transcript ──────────────
-            job_status[job_id].update({
-                "message": "Step 5/6 — Building named transcript...",
-                "step": 5,
-            })
+            update_job(job_id, message="Step 5/6 — Building named transcript...", step=5)
             segments = get_segments_for_meeting(meeting_id)
             meeting  = get_meeting_by_id(meeting_id)
 
@@ -358,38 +353,36 @@ async def upload_meeting(
             )
 
             # ── Step 6: Done ──────────────────────────────────────
-            job_status[job_id].update({
-                "message": "Step 6/6 — Done! Named transcript ready.",
-                "step": 6,
-            })
-
-            job_status[job_id] = {
-                "status":       "done",
-                "message":      "Meeting processed successfully.",
-                "meeting_id":   meeting_id,
-                "num_speakers": len(seen),
-                "speakers":     list(seen.keys()),
-                "step":         6,
-                "total":        6,
-            }
+            update_job(
+                job_id,
+                status="done",
+                message="Meeting processed successfully.",
+                step=6,
+                total=6,
+                result={
+                    "meeting_id": meeting_id,
+                    "num_speakers": len(seen),
+                    "speakers": list(seen.keys()),
+                },
+            )
 
         except Exception as e:
             import traceback
-            job_status[job_id] = {
-                "status":  "error",
-                "message": str(e),
-                "detail":  traceback.format_exc(),
-                "step":    job_status[job_id].get("step", 0),
-                "total":   6,
-            }
+            update_job(
+                job_id,
+                status="error",
+                message=str(e),
+                total=6,
+                error_detail=traceback.format_exc(),
+            )
 
-    background_tasks.add_task(do_process)
+    submit_job(job_id, do_process, cleanup=lambda: remove_job_directory(job_dir))
     return {"job_id": job_id, "message": "Processing started"}
 
 
 @app.get("/api/jobs/{job_id}")
 def get_job_status(job_id: str):
-    return job_status.get(job_id, {"status": "not_found"})
+    return get_job(job_id) or {"status": "not_found"}
 
 
 # ── TRANSCRIPTS ───────────────────────────────────────────────────────────────
@@ -422,23 +415,23 @@ def get_summary(meeting_id: int):
 
 
 @app.post("/api/meetings/{meeting_id}/summarize")
-async def summarize_meeting(meeting_id: int, background_tasks: BackgroundTasks):
+async def summarize_meeting(meeting_id: int):
     job_id = make_job_id()
-    job_status[job_id] = {"status": "running", "message": "Generating summary..."}
+    create_job(job_id, "meeting_summary", "Waiting to generate summary...")
 
     def do_summarize():
-        try:
-            from src.summarize import run_summarize
-            run_summarize(meeting_id=meeting_id)
-            job_status[job_id] = {
-                "status": "done",
-                "message": "Summary generated.",
-                "meeting_id": meeting_id,
-            }
-        except Exception as e:
-            job_status[job_id] = {"status": "error", "message": str(e)}
+        from src.summarize import run_summarize
 
-    background_tasks.add_task(do_summarize)
+        update_job(job_id, message="Generating summary...")
+        run_summarize(meeting_id=meeting_id)
+        update_job(
+            job_id,
+            status="done",
+            message="Summary generated.",
+            result={"meeting_id": meeting_id},
+        )
+
+    submit_job(job_id, do_summarize)
     return {"job_id": job_id}
 
 

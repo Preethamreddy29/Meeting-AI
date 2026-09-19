@@ -248,17 +248,8 @@ SENTIMENT PER SPEAKER
 
 
 def save_summary_to_db(meeting_id: int, summary_text: str, file_path: str):
-    """
-    Store summary in meetings table so it's queryable later.
-    Adds summary_text and summary_path columns if not already there.
-    """
+    """Store a generated summary on its meeting record."""
     conn = get_connection()
-    try:
-        conn.execute("ALTER TABLE meetings ADD COLUMN summary_text TEXT")
-        conn.execute("ALTER TABLE meetings ADD COLUMN summary_path TEXT")
-    except Exception:
-        pass  # columns already exist
-
     conn.execute(
         """UPDATE meetings
            SET summary_text = ?, summary_path = ?

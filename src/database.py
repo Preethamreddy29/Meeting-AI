@@ -9,8 +9,10 @@ DB_PATH = Path("data/meeting_ai.db")
 
 def get_connection():
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=30)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    conn.execute("PRAGMA busy_timeout = 30000")
     return conn
 
 
@@ -19,6 +21,11 @@ def init_db():
     cursor = conn.cursor()
 
     cursor.executescript("""
+        CREATE TABLE IF NOT EXISTS schema_migrations (
+            version    INTEGER PRIMARY KEY,
+            applied_at TEXT NOT NULL
+        );
+
         CREATE TABLE IF NOT EXISTS speakers (
             id          INTEGER PRIMARY KEY AUTOINCREMENT,
             name        TEXT    NOT NULL UNIQUE,
@@ -41,7 +48,9 @@ def init_db():
             processed_at TEXT NOT NULL,
             duration_sec REAL,
             num_speakers INTEGER DEFAULT 0,
-            report_path  TEXT
+            report_path  TEXT,
+            summary_text TEXT,
+            summary_path TEXT
         );
 
         CREATE TABLE IF NOT EXISTS segments (
@@ -66,11 +75,130 @@ def init_db():
             corrected_at      TEXT,
             used_for_training INTEGER DEFAULT 0
         );
+
+        CREATE TABLE IF NOT EXISTS jobs (
+            id           TEXT PRIMARY KEY,
+            job_type     TEXT NOT NULL,
+            status       TEXT NOT NULL,
+            message      TEXT,
+            step         INTEGER DEFAULT 0,
+            total        INTEGER DEFAULT 0,
+            result_json  TEXT,
+            error_detail TEXT,
+            created_at   TEXT NOT NULL,
+            updated_at   TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_segments_meeting_start
+        ON segments(meeting_id, start_time);
+
+        CREATE INDEX IF NOT EXISTS idx_segments_speaker
+        ON segments(speaker_id);
+
+        CREATE INDEX IF NOT EXISTS idx_jobs_status_created
+        ON jobs(status, created_at);
     """)
+
+    # Migrate databases created by older versions of the application.
+    meeting_columns = {
+        row["name"]
+        for row in cursor.execute("PRAGMA table_info(meetings)").fetchall()
+    }
+    if "summary_text" not in meeting_columns:
+        cursor.execute("ALTER TABLE meetings ADD COLUMN summary_text TEXT")
+    if "summary_path" not in meeting_columns:
+        cursor.execute("ALTER TABLE meetings ADD COLUMN summary_path TEXT")
+
+    cursor.execute(
+        "INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (1, ?)",
+        (datetime.now().isoformat(),),
+    )
 
     conn.commit()
     conn.close()
-    print("✅ Database initialised: data/meeting_ai.db")
+    print("Database initialised: data/meeting_ai.db")
+
+
+def create_job(job_id: str, job_type: str, message: str, total: int = 0):
+    conn = get_connection()
+    now = datetime.now().isoformat()
+    conn.execute(
+        """INSERT INTO jobs
+           (id, job_type, status, message, step, total, created_at, updated_at)
+           VALUES (?, ?, 'queued', ?, 0, ?, ?, ?)""",
+        (job_id, job_type, message, total, now, now),
+    )
+    conn.commit()
+    conn.close()
+
+
+def update_job(
+    job_id: str,
+    *,
+    status: str = None,
+    message: str = None,
+    step: int = None,
+    total: int = None,
+    result: dict = None,
+    error_detail: str = None,
+):
+    values = {
+        "status": status,
+        "message": message,
+        "step": step,
+        "total": total,
+        "result_json": json.dumps(result) if result is not None else None,
+        "error_detail": error_detail,
+    }
+    assignments = []
+    params = []
+    for column, value in values.items():
+        if value is not None:
+            assignments.append(f"{column} = ?")
+            params.append(value)
+    if not assignments:
+        return
+
+    assignments.append("updated_at = ?")
+    params.append(datetime.now().isoformat())
+    params.append(job_id)
+
+    conn = get_connection()
+    conn.execute(
+        f"UPDATE jobs SET {', '.join(assignments)} WHERE id = ?",
+        params,
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_job(job_id: str):
+    conn = get_connection()
+    row = conn.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
+    conn.close()
+    if not row:
+        return None
+
+    job = dict(row)
+    result_json = job.pop("result_json", None)
+    if result_json:
+        job.update(json.loads(result_json))
+    return job
+
+
+def fail_incomplete_jobs():
+    conn = get_connection()
+    now = datetime.now().isoformat()
+    conn.execute(
+        """UPDATE jobs
+           SET status = 'error',
+               message = 'Job interrupted by application restart',
+               updated_at = ?
+           WHERE status IN ('queued', 'running')""",
+        (now,),
+    )
+    conn.commit()
+    conn.close()
 
 
 # ── SPEAKERS ─────────────────────────────────────────────────────────────────
@@ -116,11 +244,16 @@ def upsert_speaker(name: str, embedding: list, num_samples: int) -> int:
 def insert_voice_sample(speaker_id: int, file_path: str, duration_sec: float = None):
     conn = get_connection()
     now = datetime.now().isoformat()
-    conn.execute(
-        """INSERT INTO voice_samples (speaker_id, file_path, duration_sec, enrolled_at)
-           VALUES (?, ?, ?, ?)""",
-        (speaker_id, file_path, duration_sec, now)
-    )
+    existing = conn.execute(
+        "SELECT id FROM voice_samples WHERE speaker_id = ? AND file_path = ?",
+        (speaker_id, file_path),
+    ).fetchone()
+    if not existing:
+        conn.execute(
+            """INSERT INTO voice_samples (speaker_id, file_path, duration_sec, enrolled_at)
+               VALUES (?, ?, ?, ?)""",
+            (speaker_id, file_path, duration_sec, now)
+        )
     conn.commit()
     conn.close()
 
