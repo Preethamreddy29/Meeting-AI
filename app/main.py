@@ -5,7 +5,7 @@ from src.audio_preprocess import convert_to_wav
 from src.transcribe import transcribe_audio
 from src.file_utils import save_text, save_json, load_json
 from src.align_speakers import (
-    build_speaker_transcript,
+    align_transcript_segments,
     merge_consecutive_speaker_lines,
     replace_speaker_labels_with_names,
     format_speaker_transcript,
@@ -76,30 +76,26 @@ def run_meeting_ai():
     # Save raw segments to DB
     for seg in speaker_segments:
         # Find matching transcript text for this segment
-        matched_text = ""
-        for t_seg in transcript_segments:
-            if (
-                t_seg["start"] >= seg["start"] - 0.5
-                and t_seg["end"] <= seg["end"] + 0.5
-            ):
-                matched_text += " " + t_seg["text"]
-        matched_text = matched_text.strip()
-
-        insert_segment(
-            meeting_id=meeting_id,
-            speaker_label=seg["speaker"],
-            start_time=seg["start"],
-            end_time=seg["end"],
-            transcript_text=matched_text,
+        aligned_segments = align_transcript_segments(
+            transcript_segments,
+            speaker_segments,
         )
 
+        for segment in aligned_segments:
+            insert_segment(
+                meeting_id=meeting_id,
+                speaker_label=segment["speaker"],
+                start_time=segment["start"],
+                end_time=segment["end"],
+                transcript_text=segment["text"],
+                is_overlap=segment["is_overlap"],
+            )  
     # Also save JSON files for compatibility
     save_json(speaker_segments,    str(report_dir / "speaker_segments.json"))
     save_json(transcript_segments, str(report_dir / "transcript_segments.json"))
 
     # Build readable speaker transcript for the folder
-    speaker_transcript = build_speaker_transcript(transcript_segments, speaker_segments)
-    merged_transcript  = merge_consecutive_speaker_lines(speaker_transcript)
+    merged_transcript = merge_consecutive_speaker_lines(aligned_segments)
     detailed_text      = format_speaker_transcript(merged_transcript)
     save_text(detailed_text, str(report_dir / "speaker_transcript_detailed.txt"))
 

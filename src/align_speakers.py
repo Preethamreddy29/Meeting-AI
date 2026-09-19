@@ -24,23 +24,60 @@ def find_best_speaker(transcript_segment, speaker_segments):
 
     return best_speaker
 
+def align_transcript_segments(transcript_segments, speaker_segments):
+    """
+    Assign each Whisper transcript segment to the diarization speaker
+    with the greatest time overlap.
+
+    Transcript segments are the source of truth, ensuring that spoken
+    text is not silently dropped when diarization boundaries differ.
+    """
+    aligned = []
+
+    for transcript in transcript_segments:
+        overlaps = []
+
+        for speaker_segment in speaker_segments:
+            overlap = calculate_overlap(
+                transcript["start"],
+                transcript["end"],
+                speaker_segment["start"],
+                speaker_segment["end"],
+            )
+
+            if overlap > 0:
+                overlaps.append((overlap, speaker_segment))
+
+        if overlaps:
+            overlaps.sort(key=lambda item: item[0], reverse=True)
+            best_segment = overlaps[0][1]
+            speaker = best_segment["speaker"]
+
+            overlapping_speakers = {
+                segment["speaker"]
+                for overlap, segment in overlaps
+                if overlap > 0
+            }
+            is_overlap = len(overlapping_speakers) > 1
+        else:
+            speaker = "UNKNOWN"
+            is_overlap = False
+
+        aligned.append({
+            "start": transcript["start"],
+            "end": transcript["end"],
+            "speaker": speaker,
+            "text": transcript["text"].strip(),
+            "is_overlap": is_overlap,
+        })
+
+    return aligned
 
 def build_speaker_transcript(transcript_segments, speaker_segments):
-    final_lines = []
-
-    for segment in transcript_segments:
-        speaker = find_best_speaker(segment, speaker_segments)
-
-        line = {
-            "start": segment["start"],
-            "end": segment["end"],
-            "speaker": speaker,
-            "text": segment["text"],
-        }
-
-        final_lines.append(line)
-
-    return final_lines
+    return align_transcript_segments(
+        transcript_segments,
+        speaker_segments,
+    )
 
 
 def format_speaker_transcript(speaker_transcript):
@@ -58,19 +95,20 @@ def merge_consecutive_speaker_lines(speaker_transcript):
     if not speaker_transcript:
         return []
 
-    merged = [speaker_transcript[0]]
+    merged = [speaker_transcript[0].copy()]
 
     for current in speaker_transcript[1:]:
         previous = merged[-1]
 
         same_speaker = current["speaker"] == previous["speaker"]
         close_enough = current["start"] - previous["end"] <= 1.0
+        has_overlap = current.get("is_overlap") or previous.get("is_overlap")
 
-        if same_speaker and close_enough:
+        if same_speaker and close_enough and not has_overlap:
             previous["end"] = current["end"]
             previous["text"] = previous["text"] + " " + current["text"]
         else:
-            merged.append(current)
+            merged.append(current.copy())
 
     return merged
 

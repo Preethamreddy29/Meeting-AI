@@ -7,6 +7,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
 
+
 # ── PyTorch kernel conflict patch ─────────────────────────────────────────────
 # When FastAPI loads multiple torch-based models in the same process,
 # PyTorch throws a kernel registration conflict. This suppresses it safely.
@@ -193,7 +194,7 @@ async def upload_meeting(
             from src.transcribe import transcribe_audio
             from src.diarize import diarize_audio
             from src.align_speakers import (
-                build_speaker_transcript,
+                align_transcript_segments,
                 merge_consecutive_speaker_lines,
                 format_speaker_transcript,
             )
@@ -230,18 +231,19 @@ async def upload_meeting(
             update_job(job_id, message="Step 3/6 — Detecting speakers (pyannote)...", step=3)
             speaker_segments = diarize_audio(processed)
 
-            for seg in speaker_segments:
-                matched_text = " ".join(
-                    t["text"] for t in transcript_segments
-                    if t["start"] >= seg["start"] - 0.5
-                    and t["end"]   <= seg["end"]   + 0.5
-                ).strip()
+            aligned_segments = align_transcript_segments(
+                transcript_segments,
+                speaker_segments,
+            )
+
+            for segment in aligned_segments:
                 insert_segment(
                     meeting_id=meeting_id,
-                    speaker_label=seg["speaker"],
-                    start_time=seg["start"],
-                    end_time=seg["end"],
-                    transcript_text=matched_text,
+                    speaker_label=segment["speaker"],
+                    start_time=segment["start"],
+                    end_time=segment["end"],
+                    transcript_text=segment["text"],
+                    is_overlap=segment["is_overlap"],
                 )
 
             report_dir = Path(f"outputs/transcripts/meeting_{meeting_id}")
@@ -249,10 +251,7 @@ async def upload_meeting(
             save_json(speaker_segments,    str(report_dir / "speaker_segments.json"))
             save_json(transcript_segments, str(report_dir / "transcript_segments.json"))
 
-            speaker_transcript = build_speaker_transcript(
-                transcript_segments, speaker_segments
-            )
-            merged   = merge_consecutive_speaker_lines(speaker_transcript)
+            merged = merge_consecutive_speaker_lines(aligned_segments)
             detailed = format_speaker_transcript(merged)
             save_text(detailed,        str(report_dir / "speaker_transcript_detailed.txt"))
             save_text(transcript_text, str(report_dir / "sample_transcript.txt"))
