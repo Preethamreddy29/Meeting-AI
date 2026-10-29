@@ -1,12 +1,6 @@
 # src/recognize_speakers.py
 from pathlib import Path
 
-import numpy as np
-import soundfile as sf
-import torch
-from speechbrain.inference.speaker import EncoderClassifier
-from speechbrain.utils.fetching import LocalStrategy
-
 from src.database import load_all_speaker_profiles
 
 HIGH_CONFIDENCE_THRESHOLD   = 0.80
@@ -19,6 +13,8 @@ MIN_GUESS_DISPLAY_THRESHOLD = 0.50
 
 
 def cosine_similarity(a, b):
+    import numpy as np
+
     a = np.array(a)
     b = np.array(b)
     denominator = np.linalg.norm(a) * np.linalg.norm(b)
@@ -28,6 +24,9 @@ def cosine_similarity(a, b):
 
 
 def load_ecapa_model():
+    from speechbrain.inference.speaker import EncoderClassifier
+    from speechbrain.utils.fetching import LocalStrategy
+
     return EncoderClassifier.from_hparams(
         source="speechbrain/spkrec-ecapa-voxceleb",
         savedir="models/spkrec-ecapa-voxceleb",
@@ -36,6 +35,8 @@ def load_ecapa_model():
 
 
 def extract_embedding_from_audio(classifier, audio_data):
+    import torch
+
     signal = torch.tensor(audio_data, dtype=torch.float32).unsqueeze(0)
     with torch.no_grad():
         embedding = classifier.encode_batch(signal)
@@ -43,6 +44,9 @@ def extract_embedding_from_audio(classifier, audio_data):
 
 
 def extract_audio_chunk(audio_path, start, end):
+    import numpy as np
+    import soundfile as sf
+
     audio_data, sample_rate = sf.read(audio_path)
     if len(audio_data.shape) > 1:
         audio_data = np.mean(audio_data, axis=1)
@@ -124,6 +128,8 @@ def recognize_diarized_speakers(audio_path, speaker_segments):
             }
             for segment in speaker_segments
         }
+
+    import numpy as np
 
     print("Loading ECAPA model for recognition...")
     classifier = load_ecapa_model()

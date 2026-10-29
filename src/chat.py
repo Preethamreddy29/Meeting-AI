@@ -1,11 +1,8 @@
 # src/chat.py
-import ollama
-import sqlite3
 from pathlib import Path
 from datetime import datetime
 from src.database import get_connection
-
-MODEL = "llama3.2:3b"
+from src.gemini_client import generate_text
 
 
 # ── DATABASE CONTEXT BUILDERS ─────────────────────────────────────────────────
@@ -316,6 +313,29 @@ You can answer ANY type of question about the meetings:
 """
 
 
+def answer_question(question: str, history: list[dict] | None = None) -> tuple[str, str]:
+    """Answer from bounded database context through backend-only Gemini."""
+    question = question.strip()
+    if not question:
+        raise ValueError("Question cannot be empty")
+
+    context = smart_context_builder(question)
+    if len(context) > 200_000:
+        context = context[:200_000] + "\n[Additional meeting context omitted for size.]"
+
+    return generate_text(
+        f"""Relevant meeting data:
+
+{context}
+
+---
+Question: {question}""",
+        system_instruction=SYSTEM_PROMPT,
+        history=history,
+        temperature=0.1,
+    )
+
+
 def run_chat():
     print("\n" + "="*60)
     print("  MEETING AI — Chat Mode")
@@ -382,56 +402,17 @@ def run_chat():
             print("\n" + get_all_speakers() + "\n")
             continue
 
-        # Build smart context from DB
         print("  [searching database...]\n")
-        context = smart_context_builder(question)
-
-        # Build messages for Ollama
-        # Include last 4 exchanges for conversation memory
-        recent_history = chat_history[-8:]
-
-        messages = [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {
-                "role": "user",
-                "content": (
-                    f"Here is the relevant meeting data:\n\n"
-                    f"{context}\n\n"
-                    f"---\n"
-                    f"Question: {question}"
-                )
-            },
-        ]
-
-        # Inject recent history for follow-up question support
-        if recent_history:
-            messages = (
-                [messages[0]]
-                + recent_history
-                + [messages[1]]
-            )
-
-        # Ask Ollama
+        # Ask Gemini through the shared backend-only client.
         print("AI: ", end="", flush=True)
         try:
-            response = ollama.chat(
-                model=MODEL,
-                messages=messages,
-                stream=True,   # stream so you see words appear live
-            )
-
-            full_response = ""
-            for chunk in response:
-                token = chunk["message"]["content"]
-                print(token, end="", flush=True)
-                full_response += token
-
-            print("\n")
+            full_response, model = answer_question(question, chat_history)
+            print(full_response + "\n")
+            print(f"  [model: {model}]\n")
 
         except Exception as e:
             full_response = f"[Error: {e}]"
             print(full_response + "\n")
-            print("  Make sure Ollama is running: ollama serve\n")
             continue
 
         # Add to history for follow-up support

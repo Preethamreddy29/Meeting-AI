@@ -6,7 +6,6 @@ export default function Summary() {
   const [meetings, setMeetings]  = useState([])
   const [selected, setSelected]  = useState(null)
   const [summary,  setSummary]   = useState(null)
-  const [jobId,    setJobId]     = useState(null)
   const [status,   setStatus]    = useState(null)
 
   useEffect(() => {
@@ -27,14 +26,13 @@ export default function Summary() {
     const r = await axios.post(
       `http://localhost:8000/api/meetings/${selected}/summarize`
     )
-    setJobId(r.data.job_id)
     setStatus({ status: "running", message: "Generating summary..." })
 
     const interval = setInterval(() => {
       axios.get(`http://localhost:8000/api/jobs/${r.data.job_id}`)
         .then(j => {
           setStatus(j.data)
-          if (j.data.status !== "running") {
+          if (!["queued", "running"].includes(j.data.status)) {
             clearInterval(interval)
             if (j.data.status === "done") load(selected)
           }
@@ -44,7 +42,11 @@ export default function Summary() {
 
   return (
     <div>
-      <h1 className="page-title">Meeting Summary</h1>
+      <div className="page-heading"><div className="page-heading-copy">
+        <span className="eyebrow">Step 3 · Understand</span>
+        <h1 className="page-title">AI summaries</h1>
+        <p className="page-subtitle">Use Gemini to generate a concise summary after the transcript has been reviewed.</p>
+      </div></div>
       <div className="grid-2" style={{alignItems:"start"}}>
         <div className="card">
           <h3 style={{marginBottom:16}}>Select Meeting</h3>
@@ -81,7 +83,7 @@ export default function Summary() {
                 {status && (
                   <div className={`status-bar status-${status.status}`}
                     style={{marginBottom:16}}>
-                    {status.status === "running" && (
+                    {["queued", "running"].includes(status.status) && (
                       <Loader size={14} style={{
                         display:"inline",marginRight:8,
                         animation:"spin 1s linear infinite"

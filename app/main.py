@@ -1,8 +1,6 @@
 # app/main.py
 from pathlib import Path
 
-from src.audio_preprocess import convert_to_wav
-from src.transcribe import transcribe_audio
 from src.file_utils import save_text, save_json, load_json
 from src.align_speakers import (
     align_transcript_segments,
@@ -10,7 +8,6 @@ from src.align_speakers import (
     replace_speaker_labels_with_names,
     format_speaker_transcript,
 )
-from src.check_voice_samples import check_voice_samples
 from src.database import (
     init_db,
     insert_meeting,
@@ -46,14 +43,33 @@ def format_timestamp(seconds: float) -> str:
     return f"{h:02d}:{m:02d}:{s:02d}"
 
 
+def insert_aligned_transcript(meeting_id, transcript_segments, speaker_segments):
+    """Align and persist each transcript segment exactly once."""
+    aligned_segments = align_transcript_segments(
+        transcript_segments,
+        speaker_segments,
+    )
+    for segment in aligned_segments:
+        insert_segment(
+            meeting_id=meeting_id,
+            speaker_label=segment["speaker"],
+            start_time=segment["start"],
+            end_time=segment["end"],
+            transcript_text=segment["text"],
+            is_overlap=segment["is_overlap"],
+        )
+    return aligned_segments
+
+
 # ── Mode: enroll ──────────────────────────────────────────────────────────────
 # No changes needed — enroll_speakers.py handles DB directly
 
 
 # ── Mode: meeting_ai ──────────────────────────────────────────────────────────
 def run_meeting_ai():
-    
+    from src.audio_preprocess import convert_to_wav
     from src.diarize import diarize_audio
+    from src.transcribe import transcribe_audio
 
     print("Running meeting AI mode")
     init_db()
@@ -73,23 +89,13 @@ def run_meeting_ai():
     # Diarize
     speaker_segments = diarize_audio(PROCESSED_FILE)
 
-    # Save raw segments to DB
-    for seg in speaker_segments:
-        # Find matching transcript text for this segment
-        aligned_segments = align_transcript_segments(
-            transcript_segments,
-            speaker_segments,
-        )
-
-        for segment in aligned_segments:
-            insert_segment(
-                meeting_id=meeting_id,
-                speaker_label=segment["speaker"],
-                start_time=segment["start"],
-                end_time=segment["end"],
-                transcript_text=segment["text"],
-                is_overlap=segment["is_overlap"],
-            )  
+    # Align once and insert each transcript segment exactly once. The old nested
+    # loop repeated the complete aligned transcript for every diarization segment.
+    aligned_segments = insert_aligned_transcript(
+        meeting_id,
+        transcript_segments,
+        speaker_segments,
+    )
     # Also save JSON files for compatibility
     save_json(speaker_segments,    str(report_dir / "speaker_segments.json"))
     save_json(transcript_segments, str(report_dir / "transcript_segments.json"))
@@ -227,6 +233,9 @@ def run_final_report():
 
 # ── Mode: transcribe only ─────────────────────────────────────────────────────
 def run_transcribe_only():
+    from src.audio_preprocess import convert_to_wav
+    from src.transcribe import transcribe_audio
+
     print("Running transcription-only mode")
     convert_to_wav(INPUT_FILE, PROCESSED_FILE)
     transcript_segments, transcript_text = transcribe_audio(PROCESSED_FILE)
@@ -249,6 +258,8 @@ if __name__ == "__main__":
         from src.enroll_speakers import enroll_speakers
         enroll_speakers()
     elif MODE == "check_samples":
+        from src.check_voice_samples import check_voice_samples
+
         check_voice_samples()
     elif MODE == "transcribe_only":
         run_transcribe_only()

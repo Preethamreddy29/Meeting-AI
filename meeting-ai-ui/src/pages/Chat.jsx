@@ -42,12 +42,13 @@ export default function Chat() {
         ...prev,
         { role: "ai", text: r.data.answer },
       ])
-    } catch (e) {
+    } catch (error) {
       setMessages(prev => [
         ...prev,
         {
           role: "ai",
-          text: "Sorry, something went wrong. Make sure Ollama is running.",
+          text: error.response?.data?.error
+            || "Gemini could not answer right now. Check the backend configuration and try again.",
         },
       ])
     }
@@ -64,7 +65,11 @@ export default function Chat() {
 
   return (
     <div>
-      <h1 className="page-title">Chat with your Meetings</h1>
+      <div className="page-heading"><div className="page-heading-copy">
+        <span className="eyebrow">Meeting intelligence</span>
+        <h1 className="page-title">Ask your meetings</h1>
+        <p className="page-subtitle">Ask Gemini about the transcripts and meeting records stored in this workspace.</p>
+      </div></div>
       <div className="card chat-wrap">
         <div className="chat-msgs">
           {messages.map((m, i) => (

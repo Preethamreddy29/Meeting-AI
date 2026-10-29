@@ -7,6 +7,13 @@ from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
 
+from dotenv import load_dotenv
+
+
+# Load the ignored project-root .env explicitly for backend-only configuration.
+# No environment values are exposed to the frontend or logged here.
+load_dotenv(Path(__file__).resolve().parents[1] / ".env")
+
 
 # ── PyTorch kernel conflict patch ─────────────────────────────────────────────
 # When FastAPI loads multiple torch-based models in the same process,
@@ -34,12 +41,15 @@ from src.database import (
     update_job,
 )
 from src.jobs import submit_job
+from src.meeting_actions import init_actions
 from src.storage import remove_job_directory, safe_name, save_audio_upload
+from api.meeting_actions import router as meeting_actions_router
 
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     init_db()
+    init_actions()
     fail_incomplete_jobs()
     yield
 
@@ -48,11 +58,18 @@ app = FastAPI(title="Meeting AI API", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://localhost:3000"],
+    allow_origins=[
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+app.include_router(meeting_actions_router)
 
 def make_job_id():
     return datetime.now().strftime("%Y%m%d_%H%M%S_%f")
@@ -408,7 +425,7 @@ def get_summary(meeting_id: int):
     if not row or not row["summary_text"]:
         return JSONResponse(
             status_code=404,
-            content={"error": "No summary yet. Run summarize mode first."}
+            content={"error": "No summary yet. Generate one from the Summary page."}
         )
     return {"summary": row["summary_text"]}
 
@@ -416,17 +433,17 @@ def get_summary(meeting_id: int):
 @app.post("/api/meetings/{meeting_id}/summarize")
 async def summarize_meeting(meeting_id: int):
     job_id = make_job_id()
-    create_job(job_id, "meeting_summary", "Waiting to generate summary...")
+    create_job(job_id, "meeting_summary", "Waiting for Gemini summary generation...")
 
     def do_summarize():
         from src.summarize import run_summarize
 
-        update_job(job_id, message="Generating summary...")
+        update_job(job_id, message="Gemini is generating the meeting summary...")
         run_summarize(meeting_id=meeting_id)
         update_job(
             job_id,
             status="done",
-            message="Summary generated.",
+            message="Gemini summary generated.",
             result={"meeting_id": meeting_id},
         )
 
@@ -438,271 +455,40 @@ async def summarize_meeting(meeting_id: int):
 
 @app.post("/api/chat")
 async def chat(payload: dict):
-    question = payload.get("question", "").strip()
-    history  = payload.get("history", [])
+    question = str(payload.get("question", "")).strip()
+    history = payload.get("history", [])
 
     if not question:
         return JSONResponse(
             status_code=400,
-            content={"error": "Empty question"}
+            content={"error": "Question cannot be empty"},
+        )
+    if not isinstance(history, list):
+        return JSONResponse(
+            status_code=400,
+            content={"error": "Chat history must be a list"},
         )
 
     try:
-        import ollama as ollama_client
-        # Test Ollama connection first
-        try:
-            ollama_client.list()
-        except Exception:
+        from src.chat import answer_question
+
+        answer, model = answer_question(question, history)
+        return {"answer": answer, "model": model}
+    except ValueError as exc:
+        return JSONResponse(
+            status_code=400,
+            content={"error": str(exc)},
+        )
+    except Exception as exc:
+        from src.gemini_client import GeminiServiceError
+
+        if isinstance(exc, GeminiServiceError):
             return JSONResponse(
-                status_code=500,
-                content={
-                    "error": "Ollama is not running. "
-                             "Please start it from your system tray "
-                             "or run 'ollama serve' in a terminal."
-                }
+                status_code=503,
+                content={"error": str(exc), "error_code": exc.code},
             )
-        from src.database import get_connection
-
-        # ── Smart context builder inline ──────────────────────────
-        import re
-        conn    = get_connection()
-        q_lower = question.lower()
-
-        # Get all meetings overview
-        meetings_rows = conn.execute("""
-            SELECT id, filename, processed_at, num_speakers
-            FROM meetings ORDER BY id
-        """).fetchall()
-
-        meetings_text = "MEETINGS IN DATABASE:\n"
-        if meetings_rows:
-            for r in meetings_rows:
-                meetings_text += (
-                    f"  Meeting #{r['id']}: {r['filename']} | "
-                    f"processed: {str(r['processed_at'])[:10]} | "
-                    f"speakers: {r['num_speakers']}\n"
-                )
-        else:
-            meetings_text += "  No meetings yet.\n"
-
-        # Get all speakers
-        speakers_rows = conn.execute(
-            "SELECT name, num_samples FROM speakers ORDER BY name"
-        ).fetchall()
-
-        speakers_text = "ENROLLED SPEAKERS:\n"
-        if speakers_rows:
-            for r in speakers_rows:
-                speakers_text += f"  {r['name']} ({r['num_samples']} samples)\n"
-        else:
-            speakers_text += "  No speakers enrolled.\n"
-
-        context_parts = [meetings_text, speakers_text]
-
-        # Simple questions — metadata only
-        simple_keywords = [
-            "how many", "who is", "who are", "list",
-            "show me", "what meetings", "count", "enrolled",
-            "which meeting", "when was"
-        ]
-        is_simple = any(k in q_lower for k in simple_keywords)
-
-        if not is_simple:
-            # Check for speaker name mentions
-            enrolled_names = [r["name"].lower() for r in speakers_rows]
-            mentioned = [
-                r["name"] for r in speakers_rows
-                if r["name"].lower() in q_lower
-            ]
-
-            # Check for meeting ID
-            meeting_ids = re.findall(r'meeting\s*#?(\d+)', q_lower)
-
-            # Action items
-            if any(w in q_lower for w in ["action", "task", "follow", "todo"]):
-                summary_rows = conn.execute("""
-                    SELECT id, filename, summary_text
-                    FROM meetings WHERE summary_text IS NOT NULL
-                """).fetchall()
-                for r in summary_rows:
-                    if r["summary_text"] and "ACTION ITEMS" in r["summary_text"]:
-                        start = r["summary_text"].index("ACTION ITEMS")
-                        end   = r["summary_text"].find("\n\n", start + 100)
-                        chunk = r["summary_text"][start:end] if end != -1 else r["summary_text"][start:]
-                        context_parts.append(
-                            f"Meeting #{r['id']} ({r['filename']}) — {chunk.strip()}"
-                        )
-
-            elif mentioned:
-                # Load segments for mentioned speakers
-                for name in mentioned:
-                    segs = conn.execute("""
-                        SELECT
-                            seg.start_time,
-                            meet.filename,
-                            meet.id AS meeting_id,
-                            seg.transcript_text
-                        FROM segments seg
-                        JOIN speakers spk  ON seg.speaker_id = spk.id
-                        JOIN meetings meet ON seg.meeting_id = meet.id
-                        WHERE LOWER(spk.name) = LOWER(?)
-                        ORDER BY meet.id, seg.start_time
-                    """, (name,)).fetchall()
-
-                    if segs:
-                        block = f"ALL SEGMENTS BY {name.upper()}:\n"
-                        for s in segs:
-                            ts = int(s["start_time"])
-                            ts_str = f"{ts//3600:02d}:{(ts%3600)//60:02d}:{ts%60:02d}"
-                            block += (
-                                f"  [Meeting #{s['meeting_id']} "
-                                f"— {s['filename']} @ {ts_str}] "
-                                f"{s['transcript_text']}\n"
-                            )
-                        context_parts.append(block)
-
-            elif meeting_ids:
-                # Load specific meeting transcript
-                for mid in meeting_ids:
-                    segs = conn.execute("""
-                        SELECT
-                            seg.start_time,
-                            spk.name AS speaker_name,
-                            seg.transcript_text
-                        FROM segments seg
-                        LEFT JOIN speakers spk ON seg.speaker_id = spk.id
-                        WHERE seg.meeting_id = ?
-                        ORDER BY seg.start_time
-                    """, (int(mid),)).fetchall()
-
-                    if segs:
-                        block = f"TRANSCRIPT — Meeting #{mid}:\n"
-                        for s in segs:
-                            ts  = int(s["start_time"])
-                            ts_str = f"{ts//3600:02d}:{(ts%3600)//60:02d}:{ts%60:02d}"
-                            name = s["speaker_name"] or "UNKNOWN"
-                            block += f"  [{ts_str}] {name}: {s['transcript_text']}\n"
-                        context_parts.append(block)
-
-            else:
-                # Keyword search + latest meeting transcript
-                skip = {
-                    "what","who","when","where","how","did","the",
-                    "about","meeting","say","said","tell","show",
-                    "give","list","find","all","any","this","that"
-                }
-                words   = re.findall(r'\b[a-z]{4,}\b', q_lower)
-                keywords = [w for w in words if w not in skip]
-
-                found = False
-                for kw in keywords[:2]:
-                    segs = conn.execute("""
-                        SELECT
-                            seg.start_time,
-                            spk.name AS speaker_name,
-                            meet.filename,
-                            meet.id AS meeting_id,
-                            seg.transcript_text
-                        FROM segments seg
-                        LEFT JOIN speakers spk  ON seg.speaker_id = spk.id
-                        LEFT JOIN meetings meet ON seg.meeting_id = meet.id
-                        WHERE LOWER(seg.transcript_text) LIKE LOWER(?)
-                        ORDER BY meet.id, seg.start_time
-                        LIMIT 20
-                    """, (f"%{kw}%",)).fetchall()
-
-                    if segs:
-                        block = f"SEGMENTS CONTAINING '{kw.upper()}':\n"
-                        for s in segs:
-                            ts  = int(s["start_time"])
-                            ts_str = f"{ts//3600:02d}:{(ts%3600)//60:02d}:{ts%60:02d}"
-                            nm  = s["speaker_name"] or "UNKNOWN"
-                            block += (
-                                f"  [Meeting #{s['meeting_id']} @ {ts_str}] "
-                                f"{nm}: {s['transcript_text']}\n"
-                            )
-                        context_parts.append(block)
-                        found = True
-
-                # Fallback — load latest meeting
-                if not found:
-                    latest = conn.execute(
-                        "SELECT MAX(id) AS id FROM meetings"
-                    ).fetchone()
-                    if latest and latest["id"]:
-                        segs = conn.execute("""
-                            SELECT
-                                seg.start_time,
-                                spk.name AS speaker_name,
-                                seg.transcript_text
-                            FROM segments seg
-                            LEFT JOIN speakers spk ON seg.speaker_id = spk.id
-                            WHERE seg.meeting_id = ?
-                            ORDER BY seg.start_time
-                            LIMIT 50
-                        """, (latest["id"],)).fetchall()
-
-                        if segs:
-                            block = f"LATEST MEETING TRANSCRIPT:\n"
-                            total = 0
-                            for s in segs:
-                                ts  = int(s["start_time"])
-                                ts_str = f"{ts//3600:02d}:{(ts%3600)//60:02d}:{ts%60:02d}"
-                                nm  = s["speaker_name"] or "UNKNOWN"
-                                line = f"  [{ts_str}] {nm}: {s['transcript_text']}\n"
-                                if total + len(line) > 3000:
-                                    break
-                                block += line
-                                total += len(line)
-                            context_parts.append(block)
-
-        conn.close()
-
-        context = "\n\n".join(context_parts)
-
-        # Pick model based on question complexity
-        simple_check = any(k in q_lower for k in simple_keywords)
-        model = "llama3.2:3b" 
-
-        # Build messages
-        system_prompt = """You are a meeting intelligence assistant.
-You have access to real data from recorded office meetings.
-Answer questions based ONLY on the meeting data provided.
-Be specific — mention speaker names and timestamps when relevant.
-If the data does not contain the answer, say so clearly.
-Never make up information."""
-
-        recent_history = history[-8:] if history else []
-
-        messages = (
-            [{"role": "system", "content": system_prompt}]
-            + recent_history
-            + [{
-                "role": "user",
-                "content": (
-                    f"Meeting data:\n\n{context}\n\n"
-                    f"---\nQuestion: {question}"
-                ),
-            }]
-        )
-
-        # Call Ollama
-        response = ollama_client.chat(
-            model=model,
-            messages=messages,
-        )
-        answer = response["message"]["content"].strip()
-
-        return {
-            "answer": answer,
-            "model":  model,
-        }
-
-    except Exception as e:
-        import traceback
-        tb = traceback.format_exc()
-        print(f"Chat error: {tb}")
+        print(f"Chat error: {type(exc).__name__}: {exc}")
         return JSONResponse(
             status_code=500,
-            content={"error": str(e), "detail": tb}
+            content={"error": "Meeting chat failed"},
         )

@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react"
 import axios from "axios"
-import { UserPlus, CheckCircle } from "lucide-react"
+import { UserPlus } from "lucide-react"
 
 export default function Enroll() {
   const [name,     setName]     = useState("")
@@ -20,7 +20,7 @@ export default function Enroll() {
       axios.get(`http://localhost:8000/api/jobs/${jobId}`)
         .then(r => {
           setStatus(r.data)
-          if (r.data.status !== "running") clearInterval(interval)
+          if (!["queued", "running"].includes(r.data.status)) clearInterval(interval)
         })
     }, 1500)
     return () => clearInterval(interval)
@@ -38,7 +38,11 @@ export default function Enroll() {
 
   return (
     <div>
-      <h1 className="page-title">Enroll Speaker</h1>
+      <div className="page-heading"><div className="page-heading-copy">
+        <span className="eyebrow">Speaker intelligence</span>
+        <h1 className="page-title">Speaker library</h1>
+        <p className="page-subtitle">Create trusted voice profiles so future transcripts can identify who said what.</p>
+      </div></div>
       <div className="grid-2">
         <div className="card">
           <div className="form-group">
@@ -72,7 +76,7 @@ export default function Enroll() {
           <button
             className="btn btn-primary"
             onClick={submit}
-            disabled={!name || files.length === 0 || status?.status === "running"}
+            disabled={!name || files.length === 0 || ["queued", "running"].includes(status?.status)}
           >
             <UserPlus size={16} />
             Enroll Speaker

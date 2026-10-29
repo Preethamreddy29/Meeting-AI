@@ -30,7 +30,11 @@ export default function Transcripts() {
 
   return (
     <div>
-      <h1 className="page-title">Transcripts</h1>
+      <div className="page-heading"><div className="page-heading-copy">
+        <span className="eyebrow">Step 2 · Review</span>
+        <h1 className="page-title">Meeting transcripts</h1>
+        <p className="page-subtitle">Review the speaker-attributed record before using it for summaries or action extraction.</p>
+      </div></div>
       <div className="grid-2" style={{alignItems:"start"}}>
         <div className="card">
           <h3 style={{marginBottom:16}}>Select Meeting</h3>

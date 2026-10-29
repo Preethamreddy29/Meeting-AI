@@ -19,6 +19,7 @@ def submit_job(job_id: str, task, cleanup=None):
                 job_id,
                 status="error",
                 message=str(exc),
+                result={"error_code": getattr(exc, "code", "job_failed")},
                 error_detail=traceback.format_exc(),
             )
         finally:
