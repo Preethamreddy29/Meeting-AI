@@ -3,3 +3,4 @@ uvicorn==0.48.0
 python-multipart==0.0.29
 aiofiles==25.1.0
 python-dotenv==1.2.2
+tzdata==2026.6
