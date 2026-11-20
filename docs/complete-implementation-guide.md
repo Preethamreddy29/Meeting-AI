@@ -35,7 +35,7 @@ been merged.
 | FastAPI application | Implemented | API routes compile and backend tests pass |
 | SQLite persistence | Implemented | Fresh-database and legacy migration tests pass |
 | Local upload safety | Implemented | Extension, MIME type, path traversal, size, and sample-count controls are present |
-| Local transcription and speaker pipeline | Existing and preserved | Requires local FFmpeg, model dependencies, Hugging Face access, and a real audio test |
+| Local transcription and speaker pipeline | Partially verified | FFmpeg conversion and Whisper transcription pass locally; diarization and the full six-stage flow require Hugging Face access and a non-sensitive real-audio test |
 | Gemini backend client | Implemented | Key stays on the backend; missing-key and model failures are classified |
 | Gemini Summary | Implemented | Uses the shared Gemini client and saves only successful summaries |
 | Gemini Chat | Implemented | Uses bounded history and local meeting context; prefers approved structured actions |
@@ -457,15 +457,17 @@ flowchart LR
     implementation["d30fe42: Gemini Meeting-to-Action workflow"]
     windowsFix["ba33d6a: Windows timezone data for clean CI"]
     hardening["97ee753: API, UI, security, and workflow hardening"]
-    documentation["Documentation-only commit: complete architecture and handoff guide"]
+    documentation["181971f: complete architecture and handoff guide"]
+    consoleFix["Current follow-up: Windows console compatibility and local audio validation"]
 
-    main --> implementation --> windowsFix --> hardening --> documentation
+    main --> implementation --> windowsFix --> hardening --> documentation --> consoleFix
 ```
 
-At the implementation baseline immediately before this guide was committed:
+At the implementation baseline immediately before the current follow-up is published:
 
 - `origin/main` remains at `7336e3ef714bb3a54fa97c3b348e8bee1f9680f6`.
-- `feat/psi-meeting-actions` is three commits ahead of `origin/main`.
+- `feat/psi-meeting-actions` is four commits ahead of `origin/main` at
+  `181971ffed37b707fe0f057469f0c23c581362c4`.
 - Local and remote feature heads match.
 - The working directory is clean.
 - The feature branch tracks `origin/feat/psi-meeting-actions`.
@@ -473,9 +475,8 @@ At the implementation baseline immediately before this guide was committed:
 - No merge, rebase, reset, or force-push was used.
 - No pull request was created automatically.
 
-Publishing this guide adds one documentation-only commit to the end of the feature
-branch, making it four commits ahead of `origin/main`; it does not alter application
-behavior or move `main`.
+Publishing the current compatibility follow-up adds a fifth feature-branch commit. It
+does not move or merge `main`.
 
 ### 12.2 What each feature commit contains
 
@@ -484,6 +485,8 @@ behavior or move `main`.
 | `d30fe42` | Primary implementation | Gemini client, Summary/Chat migration, Action Center backend/UI, review workflow, CSV, tests, docs, requirements, initial CI, Ollama removal |
 | `ba33d6a` | Clean Windows CI fix | Explicit `tzdata` dependency so IANA timezones resolve on a fresh Windows runner |
 | `97ee753` | Final hardening | Shared configurable API client, polling cleanup, validation bounds, health endpoint, configurable CORS, approved-actions Chat context, dependency security update, expanded tests and CI audit |
+| `181971f` | Complete handoff documentation | Architecture, sequence, database, branch, setup, verification, security, and remaining-work guide |
+| Current follow-up | Windows console compatibility | Prevent non-UTF-8 Windows terminals from crashing background work; adds regression coverage and records local FFmpeg/Whisper validation |
 
 ### 12.3 Safe continuation workflow
 
@@ -628,7 +631,7 @@ text to Gemini.
 
 The documented feature branch has passed:
 
-- 29 backend tests;
+- 31 backend tests;
 - Python compilation checks;
 - `pip check` with no broken requirements;
 - clean `npm ci`;
@@ -638,6 +641,8 @@ The documented feature branch has passed:
 - Git whitespace/error checks;
 - GitHub Actions Windows backend job;
 - GitHub Actions Linux frontend job.
+- a live Gemini structured extraction using fictional notes;
+- local FFmpeg conversion and Whisper transcription using a small test sample.
 
 Tests cover database migration, upload safety, transcript alignment, missing profiles,
 Gemini configuration failure, structured schema compatibility, malformed output,
@@ -648,18 +653,17 @@ missing jobs, sample-count limits, and approved-action Chat context.
 
 ## 17. What still needs to be done by the user
 
-These are environment or product-acceptance tasks, not missing application code:
+The Gemini key/model, FFmpeg, audio packages, fictional live extraction, and local
+Whisper transcription have now been verified. The remaining items require the user's
+account access, content choice, or product decision:
 
-1. Place the real Gemini key in the ignored root `.env`.
-2. Confirm that `GEMINI_MODEL` is available to that Google project and region.
-3. Confirm quota or billing behavior for the selected Gemini account.
-4. Install FFmpeg and verify it is on `PATH` if recordings will be processed.
-5. Install `requirements-audio.txt` for the local ML pipeline.
-6. Add `HF_TOKEN` and accept gated model licenses if diarization is required.
-7. Run the fictional notes acceptance test.
-8. Run one non-sensitive real-audio end-to-end test on the target laptop.
-9. Review the generated content as a human; model output is never automatically trusted.
-10. Decide later whether to open a pull request or merge the feature branch.
+1. Add `HF_TOKEN` to the ignored root `.env` and accept the gated
+   `pyannote/speaker-diarization-3.1` model terms if diarization is required.
+2. Choose one non-sensitive recording and authorize the full six-stage audio test.
+3. Review the resulting transcript, speakers, Summary, actions, and CSV as a human;
+   model output is never automatically trusted.
+4. Confirm ongoing Gemini quota or billing behavior if the Google account changes.
+5. Decide later whether to open a pull request or merge the feature branch.
 
 ## 18. Intentional limitations and non-goals
 

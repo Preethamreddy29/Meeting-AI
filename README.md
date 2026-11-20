@@ -147,7 +147,7 @@ including distinct supporting quotations.
 
 Verified on 2026-11-20 in the local Windows checkout:
 
-- All 29 backend tests pass using temporary SQLite databases and mocked Gemini output.
+- All 31 backend tests pass using temporary SQLite databases and mocked Gemini output.
 - The Vite production build and ESLint checks passed.
 - The complete npm production/development dependency audit reported zero
   vulnerabilities after dependency updates.
@@ -155,7 +155,9 @@ Verified on 2026-11-20 in the local Windows checkout:
   editing, approval invalidation, reapproval, and approved-only CSV export.
 - Missing Gemini configuration was verified to fail clearly without saving a run.
 - A live Gemini structured extraction request passed with fictional notes.
-- The local audio/model pipeline was not exercised end to end during this change.
+- FFmpeg conversion and local Whisper transcription passed with a small existing test
+  sample. Full diarization remains blocked until `HF_TOKEN` and the gated pyannote
+  model access are configured.
 
 Backend tests use temporary SQLite files and mocked Gemini responses:
 
