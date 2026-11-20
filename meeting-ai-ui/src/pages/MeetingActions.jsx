@@ -1,12 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
-import axios from "axios"
+import { api, apiUrl, requestError } from "../api"
 import {
   AlertCircle, ArrowRight, CalendarDays, Check, CheckCircle2, ChevronDown,
   CircleDot, Clock3, Download, FileText, History, LoaderCircle, PencilLine,
   Quote, Save, Sparkles, Upload, UserRound, X,
 } from "lucide-react"
 
-const API = "http://localhost:8000"
 const ACTIVE_JOB_STATES = new Set(["queued", "running"])
 const KINDS = [
   { id: "action", label: "Actions" },
@@ -14,7 +13,7 @@ const KINDS = [
   { id: "follow_up", label: "Follow-ups" },
 ]
 
-function errorMessage(error) { return error.response?.data?.detail || error.message || "Request failed" }
+function errorMessage(error) { return requestError(error) }
 function formatSeconds(value) {
   if (value === null || value === undefined) return ""
   const seconds = Math.max(0, Math.floor(Number(value)))
@@ -44,24 +43,24 @@ export default function MeetingActions() {
   const latestMeeting = useRef("")
 
   const loadMeetings = useCallback(async () => {
-    const response = await axios.get(`${API}/api/meetings`)
+    const response = await api.get("/api/meetings")
     setMeetings(response.data.meetings)
   }, [])
   const loadRuns = useCallback(async (id) => {
-    const response = await axios.get(`${API}/api/actions/meetings/${id}/runs`)
+    const response = await api.get(`/api/actions/meetings/${id}/runs`)
     if (latestMeeting.current !== String(id)) return []
     setRuns(response.data.runs)
     return response.data.runs
   }, [])
   const loadItems = useCallback(async (id, selectedRun = "") => {
-    const response = await axios.get(`${API}/api/actions/meetings/${id}/items${selectedRun ? `?run_id=${selectedRun}` : ""}`)
+    const response = await api.get(`/api/actions/meetings/${id}/items${selectedRun ? `?run_id=${selectedRun}` : ""}`)
     if (latestMeeting.current !== String(id)) return
     setItems(response.data.items)
     setRunId(response.data.run_id ? String(response.data.run_id) : "")
     setUnits(response.data.units)
   }, [])
   const loadContext = useCallback(async (id) => {
-    const response = await axios.get(`${API}/api/actions/meetings/${id}/context`)
+    const response = await api.get(`/api/actions/meetings/${id}/context`)
     if (latestMeeting.current !== String(id)) return
     setSourceType(response.data.source_type)
     setContextDate(response.data.meeting_date || "")
@@ -70,7 +69,7 @@ export default function MeetingActions() {
 
   useEffect(() => {
     let active = true
-    axios.get(`${API}/api/meetings`)
+    api.get("/api/meetings")
       .then((response) => { if (active) setMeetings(response.data.meetings) })
       .catch((requestError) => { if (active) setError(errorMessage(requestError)) })
     return () => { active = false }
@@ -89,7 +88,7 @@ export default function MeetingActions() {
   const createNotes = async () => {
     setBusy(true); setError("")
     try {
-      const response = await axios.post(`${API}/api/actions/notes`, { title, text: notes, meeting_date: meetingDate || null, timezone: meetingDate ? timezone || null : null })
+      const response = await api.post("/api/actions/notes", { title, text: notes, meeting_date: meetingDate || null, timezone: meetingDate ? timezone || null : null })
       await loadMeetings(); selectMeeting(response.data.meeting_id); setSourceMode("existing")
       setStatus("Notes saved. Your source is ready for extraction.")
     } catch (requestError) { setStatus(""); setError(errorMessage(requestError)) } finally { setBusy(false) }
@@ -105,10 +104,10 @@ export default function MeetingActions() {
     setBusy(true); setError(""); setStatus("Gemini is reading the source and grounding every item…")
     const selectedMeeting = String(meetingId)
     try {
-      const response = await axios.post(`${API}/api/actions/meetings/${selectedMeeting}/extract`, { acknowledge_existing_reviewed: acknowledged })
+      const response = await api.post(`/api/actions/meetings/${selectedMeeting}/extract`, { acknowledge_existing_reviewed: acknowledged })
       let completed = false
       for (let attempt = 0; attempt < 90; attempt += 1) {
-        const job = (await axios.get(`${API}/api/jobs/${response.data.job_id}`)).data
+        const job = (await api.get(`/api/jobs/${response.data.job_id}`)).data
         if (latestMeeting.current !== selectedMeeting) return
         setStatus(job.message || job.status)
         if (job.status === "done") { await loadRuns(selectedMeeting); await loadItems(selectedMeeting, job.run_id); completed = true; setStatus("Draft ready. Review the source evidence before approval."); break }
@@ -121,14 +120,14 @@ export default function MeetingActions() {
   const saveContext = async () => {
     setBusy(true); setError("")
     try {
-      await axios.patch(`${API}/api/actions/meetings/${meetingId}/context`, { meeting_date: contextDate || null, timezone: contextDate ? contextTimezone || null : null })
+      await api.patch(`/api/actions/meetings/${meetingId}/context`, { meeting_date: contextDate || null, timezone: contextDate ? contextTimezone || null : null })
       await Promise.all([loadItems(meetingId, runId), loadRuns(meetingId)])
       setStatus("Meeting context saved. Relative dates have been recalculated.")
     } catch (requestError) { setStatus(""); setError(errorMessage(requestError)) } finally { setBusy(false) }
   }
   const save = async (item, changes) => {
     try {
-      const response = await axios.patch(`${API}/api/actions/items/${item.id}`, { version: item.version, ...changes })
+      const response = await api.patch(`/api/actions/items/${item.id}`, { version: item.version, ...changes })
       setItems((current) => current.map((entry) => entry.id === item.id ? { ...entry, ...response.data, dirty: false } : entry))
       setError(""); await loadRuns(meetingId)
     } catch (requestError) { setError(errorMessage(requestError)); await loadItems(meetingId, runId) }
@@ -150,7 +149,7 @@ export default function MeetingActions() {
     <div className="actions-page">
       <div className="page-heading actions-heading">
         <div className="page-heading-copy"><span className="eyebrow">Human-reviewed AI</span><h1 className="page-title">Action center</h1><p className="page-subtitle">Turn notes or transcripts into accountable, source-backed work. Nothing leaves this workspace until you approve it.</p></div>
-        {runId && <a className="btn btn-secondary" href={`${API}/api/actions/meetings/${meetingId}/export?run_id=${runId}`}><Download size={15} />Export approved CSV</a>}
+        {runId && <a className="btn btn-secondary" href={apiUrl(`/api/actions/meetings/${meetingId}/export?run_id=${runId}`)}><Download size={15} />Export approved CSV</a>}
       </div>
 
       <div className="stepper" aria-label="Action workflow progress">
@@ -168,8 +167,8 @@ export default function MeetingActions() {
 
         {sourceMode === "notes" ? (
           <div className="notes-composer">
-            <div className="composer-main"><label htmlFor="action-title">Meeting title</label><input id="action-title" placeholder="e.g. Product launch weekly sync" value={title} onChange={(event) => setTitle(event.target.value)} /><label htmlFor="action-notes">Meeting notes</label><textarea id="action-notes" rows={9} placeholder="Paste the meeting notes here. Keep owners, commitments, and date wording as stated…" value={notes} onChange={(event) => setNotes(event.target.value)} /><div className="file-inline"><Upload size={14} /><label htmlFor="action-upload">Import a .txt or .md file</label><input id="action-upload" type="file" accept=".txt,.md,text/plain,text/markdown" onChange={async (event) => { const file = event.target.files[0]; if (!file) return; if (file.size > 256000) { setError("Text file is too large"); return } setNotes(await file.text()); if (!title) setTitle(file.name) }} /></div></div>
-            <aside className="composer-context"><span className="section-label">Meeting context</span><p>Context is optional, but required to resolve words such as “tomorrow” or “next Friday.”</p><label htmlFor="action-date">Meeting date</label><input id="action-date" type="date" value={meetingDate} onChange={(event) => setMeetingDate(event.target.value)} /><label htmlFor="action-timezone">Timezone</label><input id="action-timezone" value={timezone} onChange={(event) => setTimezone(event.target.value)} disabled={!meetingDate} placeholder="Asia/Kolkata" /><button className="btn btn-primary" disabled={busy || !title.trim() || !notes.trim()} onClick={createNotes}>Save source <ArrowRight size={14} /></button></aside>
+            <div className="composer-main"><label htmlFor="action-title">Meeting title</label><input id="action-title" maxLength={200} placeholder="e.g. Product launch weekly sync" value={title} onChange={(event) => setTitle(event.target.value)} /><label htmlFor="action-notes">Meeting notes</label><textarea id="action-notes" maxLength={250000} rows={9} placeholder="Paste the meeting notes here. Keep owners, commitments, and date wording as stated…" value={notes} onChange={(event) => setNotes(event.target.value)} /><div className="file-inline"><Upload size={14} /><label htmlFor="action-upload">Import a .txt or .md file</label><input id="action-upload" type="file" accept=".txt,.md,text/plain,text/markdown" onChange={async (event) => { const file = event.target.files[0]; if (!file) return; if (file.size > 250000) { setError("Text file is too large"); return } setNotes(await file.text()); if (!title) setTitle(file.name.slice(0, 200)) }} /></div></div>
+            <aside className="composer-context"><span className="section-label">Meeting context</span><p>Context is optional, but required to resolve words such as “tomorrow” or “next Friday.”</p><label htmlFor="action-date">Meeting date</label><input id="action-date" type="date" value={meetingDate} onChange={(event) => setMeetingDate(event.target.value)} /><label htmlFor="action-timezone">Timezone</label><input id="action-timezone" maxLength={100} value={timezone} onChange={(event) => setTimezone(event.target.value)} disabled={!meetingDate} placeholder="Asia/Kolkata" /><button className="btn btn-primary" disabled={busy || !title.trim() || !notes.trim() || Boolean(meetingDate && !timezone.trim())} onClick={createNotes}>Save source <ArrowRight size={14} /></button></aside>
           </div>
         ) : (
           <div className="existing-source">

@@ -6,6 +6,7 @@ import warnings
 from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
+from typing import Literal
 
 from dotenv import load_dotenv
 
@@ -32,6 +33,7 @@ os.environ["TORCHAUDIO_USE_SOX"] = "0"
 from fastapi import FastAPI, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel, Field, field_validator
 
 from src.database import (
     create_job,
@@ -56,20 +58,54 @@ async def lifespan(_app: FastAPI):
 
 app = FastAPI(title="Meeting AI API", lifespan=lifespan)
 
+DEFAULT_ALLOWED_ORIGINS = (
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+)
+configured_origins = [
+    origin.strip().rstrip("/")
+    for origin in os.getenv("MEETING_AI_ALLOWED_ORIGINS", "").split(",")
+    if origin.strip()
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173",
-        "http://127.0.0.1:5173",
-        "http://localhost:3000",
-        "http://127.0.0.1:3000",
-    ],
-    allow_credentials=True,
+    allow_origins=configured_origins or list(DEFAULT_ALLOWED_ORIGINS),
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 app.include_router(meeting_actions_router)
+
+
+class ChatMessage(BaseModel):
+    role: Literal["user", "assistant"]
+    content: str = Field(min_length=1, max_length=8_000)
+
+
+class ChatPayload(BaseModel):
+    question: str = Field(min_length=1, max_length=2_000)
+    history: list[ChatMessage] = Field(default_factory=list, max_length=16)
+
+    @field_validator("question")
+    @classmethod
+    def question_must_have_text(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("Question cannot be empty")
+        return value
+
+
+@app.get("/api/health")
+def health():
+    return {
+        "status": "ok",
+        "gemini_configured": bool(os.getenv("GEMINI_API_KEY", "").strip()),
+        "gemini_model": os.getenv("GEMINI_MODEL", "gemini-3.5-flash-lite").strip(),
+    }
 
 def make_job_id():
     return datetime.now().strftime("%Y%m%d_%H%M%S_%f")
@@ -134,6 +170,11 @@ async def enroll_speaker(
         return JSONResponse(status_code=400, content={"error": "Speaker name is required"})
     if not files:
         return JSONResponse(status_code=400, content={"error": "At least one sample is required"})
+    if len(files) > 5:
+        return JSONResponse(
+            status_code=400,
+            content={"error": "Choose no more than five voice samples"},
+        )
 
     job_id = make_job_id()
     save_dir = Path("voice_samples") / safe_name(display_name, "speaker")
@@ -398,7 +439,13 @@ async def upload_meeting(
 
 @app.get("/api/jobs/{job_id}")
 def get_job_status(job_id: str):
-    return get_job(job_id) or {"status": "not_found"}
+    job = get_job(job_id)
+    if job is None:
+        return JSONResponse(
+            status_code=404,
+            content={"error": "Job not found", "error_code": "job_not_found"},
+        )
+    return job
 
 
 # ── TRANSCRIPTS ───────────────────────────────────────────────────────────────
@@ -454,25 +501,12 @@ async def summarize_meeting(meeting_id: int):
 # ── CHAT ──────────────────────────────────────────────────────────────────────
 
 @app.post("/api/chat")
-async def chat(payload: dict):
-    question = str(payload.get("question", "")).strip()
-    history = payload.get("history", [])
-
-    if not question:
-        return JSONResponse(
-            status_code=400,
-            content={"error": "Question cannot be empty"},
-        )
-    if not isinstance(history, list):
-        return JSONResponse(
-            status_code=400,
-            content={"error": "Chat history must be a list"},
-        )
-
+async def chat(payload: ChatPayload):
     try:
         from src.chat import answer_question
 
-        answer, model = answer_question(question, history)
+        history = [message.model_dump() for message in payload.history]
+        answer, model = answer_question(payload.question, history)
         return {"answer": answer, "model": model}
     except ValueError as exc:
         return JSONResponse(

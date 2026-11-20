@@ -1,6 +1,6 @@
-import { useRef, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import { Link } from "react-router-dom"
-import axios from "axios"
+import { api, requestError } from "../api"
 import {
   ArrowRight, AudioLines, Check, CheckCircle2, FileAudio, FileText,
   LoaderCircle, RotateCcw, ShieldCheck, Sparkles, Upload, UsersRound, X,
@@ -27,16 +27,20 @@ export default function ProcessMeeting() {
   const [drag, setDrag] = useState(false)
   const [error, setError] = useState("")
   const ref = useRef()
+  const pollTimer = useRef(null)
+
+  useEffect(() => () => window.clearInterval(pollTimer.current), [])
 
   const poll = (id) => {
-    const interval = window.setInterval(() => {
-      axios.get(`http://localhost:8000/api/jobs/${id}`)
+    window.clearInterval(pollTimer.current)
+    pollTimer.current = window.setInterval(() => {
+      api.get(`/api/jobs/${id}`)
         .then((response) => {
           setStatus(response.data)
-          if (!["queued", "running"].includes(response.data.status)) window.clearInterval(interval)
+          if (!["queued", "running"].includes(response.data.status)) window.clearInterval(pollTimer.current)
         })
         .catch(() => {
-          window.clearInterval(interval)
+          window.clearInterval(pollTimer.current)
           setStatus({ status: "error", message: "Lost connection to the local processing service." })
         })
     }, 2000)
@@ -49,6 +53,10 @@ export default function ProcessMeeting() {
       setError("Choose an MP3, MP4, WAV, M4A, or OGG recording.")
       return
     }
+    if (selectedFile.size > 2 * 1024 * 1024 * 1024) {
+      setError("The recording exceeds the 2 GiB upload limit.")
+      return
+    }
     setError(""); setFile(selectedFile); setStatus(null)
   }
 
@@ -57,10 +65,10 @@ export default function ProcessMeeting() {
     setError(""); setStatus({ status: "queued", message: "Adding the meeting to the local queue…", step: 0, total: 6 })
     const form = new FormData(); form.append("file", file)
     try {
-      const response = await axios.post("http://localhost:8000/api/meetings/upload", form)
+      const response = await api.post("/api/meetings/upload", form)
       poll(response.data.job_id)
-    } catch (requestError) {
-      setStatus({ status: "error", message: requestError.response?.data?.detail || "The recording could not be uploaded." })
+    } catch (request) {
+      setStatus({ status: "error", message: requestError(request, "The recording could not be uploaded.") })
     }
   }
 

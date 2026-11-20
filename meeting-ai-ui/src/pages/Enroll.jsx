@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react"
-import axios from "axios"
+import { api, requestError } from "../api"
 import { UserPlus } from "lucide-react"
 
 export default function Enroll() {
@@ -8,19 +8,32 @@ export default function Enroll() {
   const [jobId,    setJobId]    = useState(null)
   const [status,   setStatus]   = useState(null)
   const [speakers, setSpeakers] = useState([])
+  const [error,    setError]    = useState("")
 
   useEffect(() => {
-    axios.get("http://localhost:8000/api/speakers")
+    api.get("/api/speakers")
       .then(r => setSpeakers(r.data.speakers))
-  }, [status])
+      .catch((request) => setError(requestError(request, "Could not load enrolled speakers.")))
+  }, [])
 
   useEffect(() => {
     if (!jobId) return
     const interval = setInterval(() => {
-      axios.get(`http://localhost:8000/api/jobs/${jobId}`)
+      api.get(`/api/jobs/${jobId}`)
         .then(r => {
           setStatus(r.data)
-          if (!["queued", "running"].includes(r.data.status)) clearInterval(interval)
+          if (!["queued", "running"].includes(r.data.status)) {
+            clearInterval(interval)
+            if (r.data.status === "done") {
+              api.get("/api/speakers")
+                .then((response) => setSpeakers(response.data.speakers))
+                .catch((request) => setError(requestError(request, "Enrollment finished, but the speaker list could not be refreshed.")))
+            }
+          }
+        })
+        .catch((request) => {
+          clearInterval(interval)
+          setStatus({ status: "error", message: requestError(request, "Lost connection while checking enrollment progress.") })
         })
     }, 1500)
     return () => clearInterval(interval)
@@ -31,9 +44,18 @@ export default function Enroll() {
     const fd = new FormData()
     fd.append("name", name)
     for (const f of files) fd.append("files", f)
-    const r = await axios.post("http://localhost:8000/api/speakers/enroll", fd)
-    setJobId(r.data.job_id)
-    setStatus({ status: "running", message: "Enrolling..." })
+    setError("")
+    if (files.length > 5) {
+      setError("Choose no more than five voice samples.")
+      return
+    }
+    try {
+      const r = await api.post("/api/speakers/enroll", fd)
+      setJobId(r.data.job_id)
+      setStatus({ status: "running", message: "Enrolling..." })
+    } catch (request) {
+      setStatus({ status: "error", message: requestError(request, "Could not start speaker enrollment.") })
+    }
   }
 
   return (
@@ -55,7 +77,7 @@ export default function Enroll() {
             />
           </div>
           <div className="form-group">
-            <label>Voice Samples (2-5 audio files, 20-30 sec each)</label>
+            <label>Voice Samples (1-5 audio files, 20-30 sec each)</label>
             <input
               type="file"
               multiple
@@ -73,6 +95,7 @@ export default function Enroll() {
               {status.message}
             </div>
           )}
+          {error && <div className="status-bar status-error">{error}</div>}
           <button
             className="btn btn-primary"
             onClick={submit}

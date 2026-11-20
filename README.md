@@ -54,6 +54,10 @@ npm ci
 cd ..
 ```
 
+The frontend automatically calls port `8000` on the hostname used to open the UI.
+To use a different backend URL, copy `meeting-ai-ui/.env.example` to
+`meeting-ai-ui/.env` and set `VITE_API_URL` before starting or building Vite.
+
 ## Backend configuration
 
 Copy the placeholder file and fill only the ignored copy:
@@ -76,9 +80,15 @@ $env:HF_TOKEN = "your-hugging-face-token"
   and billing status in Google AI Studio before use. The application does not enable
   billing or fall back to another provider.
 - `HF_TOKEN` is required by the optional diarization worker for accepted gated models.
+- `MEETING_AI_ALLOWED_ORIGINS` optionally replaces the default localhost frontend
+  origins. Provide a comma-separated list when the UI is served from another host.
 
 The real `.env` and `.env.*` files are ignored; `.env.example` is intentionally safe
 to commit.
+
+Chat uses transcript and summary context and, when available, prefers structured
+Action Center items that a person has explicitly approved. Draft or rejected items
+are not presented to Chat as confirmed work.
 
 ## Start the application
 
@@ -97,6 +107,10 @@ npm run dev
 ```
 
 Open `http://localhost:5173`.
+
+Backend readiness can be checked without exposing credentials at
+`http://localhost:8000/api/health`. It reports only whether Gemini is configured
+and which model name is selected; it never returns the API key.
 
 ## Meeting-to-Action workflow
 
@@ -129,9 +143,9 @@ including distinct supporting quotations.
 
 ## Verification
 
-Verified on 2026-10-30 in the local Windows checkout:
+Verified on 2026-11-20 in the local Windows checkout:
 
-- Backend tests pass using temporary SQLite databases and mocked Gemini output.
+- All 29 backend tests pass using temporary SQLite databases and mocked Gemini output.
 - The Vite production build and ESLint checks passed.
 - The complete npm production/development dependency audit reported zero
   vulnerabilities after dependency updates.

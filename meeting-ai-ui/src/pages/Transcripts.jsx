@@ -1,20 +1,24 @@
 import { useEffect, useState } from "react"
-import axios from "axios"
+import { api, requestError } from "../api"
 
 export default function Transcripts() {
   const [meetings,   setMeetings]   = useState([])
   const [selected,   setSelected]   = useState(null)
   const [transcript, setTranscript] = useState(null)
+  const [error, setError] = useState("")
 
   useEffect(() => {
-    axios.get("http://localhost:8000/api/meetings")
+    api.get("/api/meetings")
       .then(r => setMeetings(r.data.meetings))
+      .catch((request) => setError(requestError(request, "Could not load meetings.")))
   }, [])
 
   const load = (id) => {
     setSelected(id)
-    axios.get(`http://localhost:8000/api/meetings/${id}/transcript`)
+    setError("")
+    api.get(`/api/meetings/${id}/transcript`)
       .then(r => setTranscript(r.data))
+      .catch((request) => { setTranscript(null); setError(requestError(request, "Could not load this transcript.")) })
   }
 
   const fmt = (s) => {
@@ -35,6 +39,7 @@ export default function Transcripts() {
         <h1 className="page-title">Meeting transcripts</h1>
         <p className="page-subtitle">Review the speaker-attributed record before using it for summaries or action extraction.</p>
       </div></div>
+      {error && <div className="status-bar status-error" style={{marginBottom:16}}>{error}</div>}
       <div className="grid-2" style={{alignItems:"start"}}>
         <div className="card">
           <h3 style={{marginBottom:16}}>Select Meeting</h3>

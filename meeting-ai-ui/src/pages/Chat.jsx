@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from "react"
-import axios from "axios"
+import { api, requestError } from "../api"
 import { Send } from "lucide-react"
 
 export default function Chat() {
@@ -34,7 +34,7 @@ export default function Chat() {
       }))
 
     try {
-      const r = await axios.post("http://localhost:8000/api/chat", {
+      const r = await api.post("/api/chat", {
         question: q,
         history,
       })
@@ -47,8 +47,7 @@ export default function Chat() {
         ...prev,
         {
           role: "ai",
-          text: error.response?.data?.error
-            || "Gemini could not answer right now. Check the backend configuration and try again.",
+          text: requestError(error, "Gemini could not answer right now. Check the backend configuration and try again."),
         },
       ])
     }
@@ -86,6 +85,7 @@ export default function Chat() {
         <div className="chat-input">
           <input
             type="text"
+            maxLength={2000}
             placeholder="Ask anything about your meetings..."
             value={input}
             onChange={e => setInput(e.target.value)}

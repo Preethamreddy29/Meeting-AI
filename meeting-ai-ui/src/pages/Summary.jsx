@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react"
-import axios from "axios"
+import { useEffect, useRef, useState } from "react"
+import { api, requestError } from "../api"
 import { Sparkles, Loader } from "lucide-react"
 
 export default function Summary() {
@@ -7,37 +7,49 @@ export default function Summary() {
   const [selected, setSelected]  = useState(null)
   const [summary,  setSummary]   = useState(null)
   const [status,   setStatus]    = useState(null)
+  const pollTimer = useRef(null)
 
   useEffect(() => {
-    axios.get("http://localhost:8000/api/meetings")
+    api.get("/api/meetings")
       .then(r => setMeetings(r.data.meetings))
+      .catch((error) => setStatus({ status: "error", message: requestError(error, "Could not load meetings.") }))
+    return () => window.clearTimeout(pollTimer.current)
   }, [])
 
   const load = (id) => {
     setSelected(id)
     setSummary(null)
-    axios.get(`http://localhost:8000/api/meetings/${id}/summary`)
+    setStatus(null)
+    api.get(`/api/meetings/${id}/summary`)
       .then(r => setSummary(r.data.summary))
       .catch(() => setSummary(null))
   }
 
   const generate = async () => {
     if (!selected) return
-    const r = await axios.post(
-      `http://localhost:8000/api/meetings/${selected}/summarize`
-    )
-    setStatus({ status: "running", message: "Generating summary..." })
+    window.clearTimeout(pollTimer.current)
+    try {
+      const r = await api.post(`/api/meetings/${selected}/summarize`)
+      const meetingId = selected
+      setStatus({ status: "running", message: "Generating summary..." })
 
-    const interval = setInterval(() => {
-      axios.get(`http://localhost:8000/api/jobs/${r.data.job_id}`)
-        .then(j => {
-          setStatus(j.data)
-          if (!["queued", "running"].includes(j.data.status)) {
-            clearInterval(interval)
-            if (j.data.status === "done") load(selected)
+      const poll = async () => {
+        try {
+          const response = await api.get(`/api/jobs/${r.data.job_id}`)
+          setStatus(response.data)
+          if (["queued", "running"].includes(response.data.status)) {
+            pollTimer.current = window.setTimeout(poll, 2000)
+          } else if (response.data.status === "done") {
+            load(meetingId)
           }
-        })
-    }, 2000)
+        } catch (error) {
+          setStatus({ status: "error", message: requestError(error, "Lost connection while checking summary progress.") })
+        }
+      }
+      poll()
+    } catch (error) {
+      setStatus({ status: "error", message: requestError(error, "Could not start summary generation.") })
+    }
   }
 
   return (
@@ -98,7 +110,7 @@ export default function Summary() {
                       <p style={{color:"#64748b",fontSize:14,marginBottom:20}}>
                         No summary generated yet for this meeting.
                       </p>
-                      <button className="btn btn-primary" onClick={generate}>
+                      <button className="btn btn-primary" onClick={generate} disabled={["queued", "running"].includes(status?.status)}>
                         <Sparkles size={16} />
                         Generate Summary
                       </button>
@@ -119,6 +131,7 @@ export default function Summary() {
                       <button
                         className="btn btn-ghost"
                         onClick={generate}
+                        disabled={["queued", "running"].includes(status?.status)}
                         style={{marginTop:16}}
                       >
                         Regenerate

@@ -216,12 +216,52 @@ class MeetingActionsTests(unittest.TestCase):
             "approved",
         )
 
+    def test_chat_context_uses_only_human_approved_structured_items(self):
+        from src.chat import get_action_items_all_meetings
+
+        run_id = extract_and_save(self.meeting_id, lambda _document: self.fixture)
+        items = list_items(self.meeting_id, run_id)["items"]
+        action = next(item for item in items if item["kind"] == "action")
+        change_item(action["id"], action["version"], {"review_status": "approved"})
+
+        context = get_action_items_all_meetings()
+        self.assertIn("HUMAN-APPROVED", context)
+        self.assertIn("Send the revised API spec", context)
+        self.assertNotIn("Ship Friday", context)
+
     def test_malformed_output_is_rejected(self):
         with self.assertRaises(ValueError):
             validate_output(
                 {"actions": "not-a-list", "decisions": [], "follow_ups": []},
                 source_document(self.meeting_id),
             )
+
+    def test_notes_require_date_and_timezone_together(self):
+        with self.assertRaisesRegex(ValueError, "supplied together"):
+            create_notes("Incomplete context", "Fictional notes", "2026-10-27")
+        with self.assertRaisesRegex(ValueError, "supplied together"):
+            create_notes("Incomplete context", "Fictional notes", None, "Asia/Kolkata")
+
+    def test_whitespace_only_extracted_description_is_rejected(self):
+        invalid = {
+            "actions": [
+                {
+                    "description": "   ",
+                    "owner": None,
+                    "due_date_text": None,
+                    "evidence": [
+                        {
+                            "source_unit_id": "line-1",
+                            "quote": "Rahul will send the revised API spec tomorrow.",
+                        }
+                    ],
+                }
+            ],
+            "decisions": [],
+            "follow_ups": [],
+        }
+        with self.assertRaisesRegex(ValueError, "description cannot be blank"):
+            validate_output(invalid, source_document(self.meeting_id))
 
     def test_long_notes_are_chunked_and_duplicate_items_are_merged(self):
         lines = [f"line {index} " + ("x" * 990) for index in range(45)]
@@ -280,10 +320,53 @@ class MeetingActionsApiTests(unittest.TestCase):
         self.assertIn("/api/actions/notes", paths)
         self.assertIn("/api/actions/meetings/{meeting_id}/extract", paths)
         self.assertIn("/api/actions/meetings/{meeting_id}/context", paths)
+        self.assertIn("/api/health", paths)
 
         with TestClient(app) as client:
             response = client.post("/api/actions/notes", json={"title": "", "text": ""})
         self.assertEqual(response.status_code, 422)
+
+    def test_chat_payload_is_bounded_and_job_not_found_is_404(self):
+        from api.main import app
+
+        with TestClient(app) as client:
+            blank = client.post("/api/chat", json={"question": "   ", "history": []})
+            oversized = client.post(
+                "/api/chat", json={"question": "x" * 2001, "history": []}
+            )
+            excessive_history = client.post(
+                "/api/chat",
+                json={
+                    "question": "What happened?",
+                    "history": [
+                        {"role": "user", "content": f"message {index}"}
+                        for index in range(17)
+                    ],
+                },
+            )
+            missing_job = client.get("/api/jobs/not-a-real-job")
+            health = client.get("/api/health")
+
+        self.assertEqual(blank.status_code, 422)
+        self.assertEqual(oversized.status_code, 422)
+        self.assertEqual(excessive_history.status_code, 422)
+        self.assertEqual(missing_job.status_code, 404)
+        self.assertEqual(health.status_code, 200)
+        self.assertEqual(health.json()["status"], "ok")
+
+    def test_speaker_enrollment_rejects_more_than_five_samples(self):
+        from api.main import app
+
+        files = [
+            ("files", (f"sample-{index}.wav", b"audio", "audio/wav"))
+            for index in range(6)
+        ]
+        with TestClient(app) as client:
+            response = client.post(
+                "/api/speakers/enroll", data={"name": "Fictional"}, files=files
+            )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("five", response.json()["error"])
 
 
 if __name__ == "__main__":

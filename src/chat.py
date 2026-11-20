@@ -172,8 +172,22 @@ def search_by_keyword(keyword: str) -> str:
 
 
 def get_action_items_all_meetings() -> str:
-    """Pull summaries from all meetings that have them — focus on action items."""
+    """Return human-approved structured work, with summaries as a legacy fallback."""
     conn = get_connection()
+    has_action_table = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'meeting_action_items'"
+    ).fetchone()
+    approved = []
+    if has_action_table:
+        approved = conn.execute(
+            """SELECT m.id AS meeting_id, m.filename, i.kind, i.description,
+                      i.owner, i.due_date_text, i.due_date_iso
+               FROM meeting_action_items i
+               JOIN meeting_action_runs r ON r.id = i.run_id
+               JOIN meetings m ON m.id = r.meeting_id
+               WHERE i.review_status = 'approved'
+               ORDER BY m.id, i.id"""
+        ).fetchall()
     rows = conn.execute("""
         SELECT id, filename, summary_text
         FROM meetings
@@ -182,8 +196,19 @@ def get_action_items_all_meetings() -> str:
     """).fetchall()
     conn.close()
 
+    if approved:
+        lines = ["HUMAN-APPROVED MEETING ACTIONS, DECISIONS, AND FOLLOW-UPS:"]
+        for row in approved:
+            owner = row["owner"] or "Unassigned"
+            due = row["due_date_text"] or row["due_date_iso"] or "No due date"
+            lines.append(
+                f"  Meeting #{row['meeting_id']} ({row['filename']}) | "
+                f"{row['kind']} | {row['description']} | owner: {owner} | due: {due}"
+            )
+        return "\n".join(lines)
+
     if not rows:
-        return "No meeting summaries found. Run summarize mode first."
+        return "No approved action-center items or meeting summaries found."
 
     lines = []
     for r in rows:
@@ -253,7 +278,10 @@ def smart_context_builder(question: str) -> str:
             context_parts.append(get_full_transcript(int(mid)))
     
     # Action items question
-    if any(w in q_lower for w in ["action", "task", "follow", "todo", "assigned"]):
+    if any(
+        w in q_lower
+        for w in ["action", "task", "follow", "todo", "assigned", "decision", "owner", "due"]
+    ):
         context_parts.append(get_action_items_all_meetings())
 
     # Cross-meeting or general question — pull all transcripts

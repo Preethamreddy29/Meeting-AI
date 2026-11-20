@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react"
 import { Link } from "react-router-dom"
-import axios from "axios"
+import { api } from "../api"
 import {
   ArrowRight, AudioWaveform, Clock3, FileAudio, FileText,
   ListChecks, MessageSquareText, Sparkles, UsersRound,
@@ -24,7 +24,7 @@ export default function Dashboard() {
   const [error, setError] = useState("")
 
   useEffect(() => {
-    axios.get("http://localhost:8000/api/dashboard")
+    api.get("/api/dashboard")
       .then((response) => setData(response.data))
       .catch(() => setError("The local API is not available. Start the FastAPI server and refresh."))
   }, [])

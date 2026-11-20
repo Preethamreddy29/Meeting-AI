@@ -232,12 +232,16 @@ def create_notes(
 ) -> int:
     title = title.strip()
     text = text.strip()
+    meeting_date = meeting_date.strip() if meeting_date and meeting_date.strip() else None
+    tz_name = tz_name.strip() if tz_name and tz_name.strip() else None
     if not title:
         raise ValueError("Meeting title is required")
     if len(title) > 200:
         raise ValueError("Meeting title must be at most 200 characters")
     if not text or len(text) > MAX_SOURCE_CHARS:
         raise ValueError(f"Notes must contain 1 to {MAX_SOURCE_CHARS:,} characters")
+    if bool(meeting_date) != bool(tz_name):
+        raise ValueError("meeting_date and timezone must be supplied together")
     _validate_context(meeting_date, tz_name)
 
     stamp = now()
@@ -295,6 +299,8 @@ def set_meeting_context(
     meeting_date: str | None,
     tz_name: str | None,
 ) -> dict:
+    meeting_date = meeting_date.strip() if meeting_date and meeting_date.strip() else None
+    tz_name = tz_name.strip() if tz_name and tz_name.strip() else None
     if bool(meeting_date) != bool(tz_name):
         raise ValueError("meeting_date and timezone must be supplied together")
     _validate_context(meeting_date, tz_name)
@@ -599,6 +605,9 @@ def validate_output(output: dict, document: dict) -> list[dict]:
         ("follow_up", parsed.follow_ups),
     ):
         for entry in entries:
+            description = entry.description.strip()
+            if not description:
+                raise ValueError("Extracted item description cannot be blank")
             clean_evidence = []
             issues = []
             for evidence in entry.evidence:
@@ -620,8 +629,8 @@ def validate_output(output: dict, document: dict) -> list[dict]:
             validated.append(
                 {
                     "kind": kind,
-                    "description": entry.description.strip(),
-                    "owner": entry.owner.strip() if entry.owner else None,
+                    "description": description,
+                    "owner": entry.owner.strip() if entry.owner and entry.owner.strip() else None,
                     "due_date_text": due_text,
                     "due_date_iso": due_iso,
                     "due_date_needs_review": due_review,
