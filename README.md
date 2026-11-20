@@ -23,6 +23,8 @@ React bundle, URLs, CSV exports, or application logs.
 - `data/meeting_ai.db` — ignored local SQLite database
 - `audio/`, `voice_samples/`, `outputs/` — ignored/private local artifacts
 - `tests/` — backend unit and integration tests using temporary databases
+- [`docs/complete-implementation-guide.md`](docs/complete-implementation-guide.md) — full
+  architecture, branching, security, API, database, testing, and handoff documentation
 
 ## Windows setup
 
